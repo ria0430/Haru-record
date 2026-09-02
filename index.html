@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>하루 기록</title>
+
+<!-- PWA / 홈화면 설치 관련 태그 -->
+<link rel="manifest" href="./manifest.json" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="하루기록" />
+<meta name="theme-color" content="#C1653A" />
+
+<style>
+  html, body { margin:0; padding:0; background:#FAF6EE; }
+  * { box-sizing: border-box; }
+  button { cursor:pointer; }
+  textarea, input { -webkit-appearance: none; }
+</style>
+
+<!-- React (빌드 없이 브라우저에서 바로 실행) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+
+<!-- Firebase (기기 간 동기화용 저장소) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  // ============================================================
+  // ⚠️ 여기에 본인의 Firebase 설정 값을 붙여넣으세요 ⚠️
+  // Firebase 콘솔 > 프로젝트 설정 > 내 앱 에서 복사한
+  // firebaseConfig 객체를 아래 {} 안에 그대로 붙여넣으면 됩니다.
+  // ============================================================
+  const firebaseConfig = {
+    apiKey: "여기에_apiKey_붙여넣기",
+    authDomain: "여기에_authDomain_붙여넣기",
+    projectId: "여기에_projectId_붙여넣기",
+    storageBucket: "여기에_storageBucket_붙여넣기",
+    messagingSenderId: "여기에_messagingSenderId_붙여넣기",
+    appId: "여기에_appId_붙여넣기"
+  };
+  // ============================================================
+
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.firestore();
+
+  window.loadKey = async function (key, fallback) {
+    try {
+      const snap = await db.collection('plannerData').doc(key).get();
+      return snap.exists ? snap.data().value : fallback;
+    } catch (e) {
+      console.error('불러오기 실패', e);
+      return fallback;
+    }
+  };
+  window.saveKey = async function (key, value) {
+    try {
+      await db.collection('plannerData').doc(key).set({ value, updatedAt: Date.now() });
+    } catch (e) {
+      console.error('저장 실패', e);
+    }
+  };
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    });
+  }
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+const COLORS = {
+  paper: '#FAF6EE',
+  ink: '#2B2B26',
+  inkSoft: '#8A8478',
+  sage: '#7C8B6F',
+  sageLight: '#E3E7DA',
+  coral: '#C1653A',
+  line: '#DAD3C0',
+};
+
+const BLOCK_COLORS = [
+  { name: '중요', value: '#D98B63' },
+  { name: '업무', value: '#8FA9C7' },
+  { name: '개인', value: '#9FB48A' },
+  { name: '휴식', value: '#B6A4C9' },
+  { name: '기타', value: '#B7AF9C' },
+];
+
+const HOURS = ['05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24','01','02','03','04'];
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function fmtDate(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function parseDate(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
+function addDays(s, n) { const d = parseDate(s); d.setDate(d.getDate() + n); return fmtDate(d); }
+function weekdayKR(s) { return ['일', '월', '화', '수', '목', '금', '토'][parseDate(s).getDay()]; }
+function monthKey(s) { const d = parseDate(s); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; }
+function mondayOf(s) { const d = parseDate(s); const day = d.getDay(); const diff = day === 0 ? -6 : 1 - day; d.setDate(d.getDate() + diff); return fmtDate(d); }
+function idxToLabel(idx) { const h = Math.floor(idx / 6) % 24; const m = (idx % 6) * 10; return `${HOURS[h]}:${pad(m)}`; }
+
+const inputStyle = {
+  width: '100%', padding: 10, border: `1px solid ${COLORS.line}`, borderRadius: 8,
+  fontSize: 14, background: '#fff', fontFamily: 'inherit', lineHeight: 1.6,
+};
+
+function IconBtn({ children, onClick, style }) {
+  return <button onClick={onClick} style={{ color: COLORS.inkSoft, background: 'none', border: 'none', padding: 6, fontSize: 20, lineHeight: 1, ...style }}>{children}</button>;
+}
+
+function DateNav({ date, setDate }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+      <IconBtn onClick={() => setDate(addDays(date, -1))}>‹</IconBtn>
+      <div style={{ fontFamily: 'Georgia, serif', fontSize: 17, color: COLORS.ink }}>{date} <span style={{ color: COLORS.inkSoft, fontSize: 14 }}>({weekdayKR(date)})</span></div>
+      <IconBtn onClick={() => setDate(addDays(date, 1))}>›</IconBtn>
+    </div>
+  );
+}
+
+function Loading() {
+  return <div style={{ padding: 30, textAlign: 'center', color: COLORS.inkSoft, fontSize: 13 }}>불러오는 중...</div>;
+}
+
+function PlanGrid({ blocks, onBlocksChange }) {
+  const [dragging, setDragging] = useState(false);
+  const [selStart, setSelStart] = useState(null);
+  const [selEnd, setSelEnd] = useState(null);
+  const [modal, setModal] = useState(null);
+
+  const idxToBlock = (idx) => blocks.find(b => idx >= b.start && idx <= b.end);
+  const cellFromPoint = (x, y) => {
+    const el = document.elementFromPoint(x, y);
+    if (el && el.dataset && el.dataset.idx !== undefined) return parseInt(el.dataset.idx, 10);
+    return null;
+  };
+
+  const handlePointerDown = (idx) => {
+    const existing = idxToBlock(idx);
+    if (existing) {
+      setModal({ mode: 'edit', id: existing.id, start: existing.start, end: existing.end, text: existing.text, color: existing.color });
+      return;
+    }
+    setDragging(true);
+    setSelStart(idx);
+    setSelEnd(idx);
+  };
+  const handlePointerMove = (e) => {
+    if (!dragging) return;
+    const idx = cellFromPoint(e.clientX, e.clientY);
+    if (idx !== null) setSelEnd(idx);
+  };
+  const finishDrag = () => {
+    if (!dragging) return;
+    setDragging(false);
+    const s = Math.min(selStart, selEnd), en = Math.max(selStart, selEnd);
+    const overlap = blocks.some(b => s <= b.end && en >= b.start);
+    setSelStart(null); setSelEnd(null);
+    if (overlap) return;
+    setModal({ mode: 'create', start: s, end: en, text: '', color: BLOCK_COLORS[0].value });
+  };
+
+  const saveModal = () => {
+    if (!modal.text.trim()) { closeModal(); return; }
+    if (modal.mode === 'create') {
+      const newBlock = { id: Date.now() + Math.random(), start: modal.start, end: modal.end, text: modal.text.trim(), color: modal.color };
+      onBlocksChange([...blocks, newBlock]);
+    } else {
+      onBlocksChange(blocks.map(b => b.id === modal.id ? { ...b, text: modal.text.trim(), color: modal.color } : b));
+    }
+    closeModal();
+  };
+  const deleteModal = () => { onBlocksChange(blocks.filter(b => b.id !== modal.id)); closeModal(); };
+  const closeModal = () => { setModal(null); setSelStart(null); setSelEnd(null); };
+
+  return (
+    <div>
+      <div
+        onPointerMove={handlePointerMove}
+        onPointerUp={finishDrag}
+        onPointerLeave={finishDrag}
+        style={{ touchAction: 'none', userSelect: 'none', border: `1px solid ${COLORS.line}`, borderRadius: 8, overflow: 'hidden' }}
+      >
+        {HOURS.map((h, hourIdx) => (
+          <div key={h} style={{ display: 'flex', borderBottom: hourIdx === HOURS.length - 1 ? 'none' : `1px solid ${COLORS.line}` }}>
+            <div style={{ width: 30, fontSize: 10, color: COLORS.inkSoft, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Georgia, serif', flexShrink: 0, background: COLORS.paper }}>{h}</div>
+            {[0, 1, 2, 3, 4, 5].map(col => {
+              const idx = hourIdx * 6 + col;
+              const block = idxToBlock(idx);
+              const inSel = dragging && selStart !== null && idx >= Math.min(selStart, selEnd) && idx <= Math.max(selStart, selEnd);
+              const isBlockStart = block && block.start === idx;
+              return (
+                <div
+                  key={col}
+                  data-idx={idx}
+                  onPointerDown={() => handlePointerDown(idx)}
+                  style={{
+                    flex: 1, height: 22,
+                    borderLeft: col === 0 ? 'none' : `1px dashed ${COLORS.line}`,
+                    background: block ? block.color : (inSel ? COLORS.sageLight : '#fff'),
+                    position: 'relative', overflow: 'hidden',
+                  }}
+                >
+                  {isBlockStart && (
+                    <span style={{ position: 'absolute', left: 3, top: 2, fontSize: 9, color: '#fff', whiteSpace: 'nowrap', fontFamily: 'system-ui, sans-serif' }}>{block.text}</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {modal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(43,43,38,0.45)', display: 'flex', alignItems: 'flex-end', zIndex: 50 }} onClick={closeModal}>
+          <div onClick={e => e.stopPropagation()} style={{ background: COLORS.paper, width: '100%', borderRadius: '16px 16px 0 0', padding: 20, paddingBottom: 28 }}>
+            <div style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 10 }}>
+              {idxToLabel(modal.start)} ~ {idxToLabel(modal.end + 1)}
+            </div>
+            <input
+              autoFocus
+              value={modal.text}
+              onChange={e => setModal({ ...modal, text: e.target.value })}
+              placeholder="할 일을 입력하세요"
+              style={{ ...inputStyle, marginBottom: 12 }}
+            />
+            <div style={{ display: 'flex', gap: 10, marginBottom: 18 }}>
+              {BLOCK_COLORS.map(c => (
+                <button key={c.value} onClick={() => setModal({ ...modal, color: c.value })}
+                  style={{ width: 30, height: 30, borderRadius: '50%', background: c.value, border: modal.color === c.value ? `2px solid ${COLORS.ink}` : '2px solid transparent' }} />
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {modal.mode === 'edit' && (
+                <button onClick={deleteModal} style={{ flex: 1, padding: 10, borderRadius: 8, background: '#fff', border: `1px solid ${COLORS.line}`, color: COLORS.coral, fontSize: 14 }}>삭제</button>
+              )}
+              <button onClick={closeModal} style={{ flex: 1, padding: 10, borderRadius: 8, background: '#fff', border: `1px solid ${COLORS.line}`, color: COLORS.inkSoft, fontSize: 14 }}>취소</button>
+              <button onClick={saveModal} style={{ flex: 1, padding: 10, borderRadius: 8, background: COLORS.sage, border: 'none', color: '#fff', fontSize: 14 }}>저장</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TodoTab() {
+  const [date, setDate] = useState(fmtDate(new Date()));
+  const [top3, setTop3] = useState([{ text: '', done: false }, { text: '', done: false }, { text: '', done: false }]);
+  const [others, setOthers] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true; setLoading(true);
+    window.loadKey(`todo:${date}`, { top3: [{ text: '', done: false }, { text: '', done: false }, { text: '', done: false }], others: [] }).then(d => {
+      if (active) { setTop3(d.top3); setOthers(d.others); setLoading(false); }
+    });
+    return () => { active = false; };
+  }, [date]);
+
+  const persist = (t3, oth) => window.saveKey(`todo:${date}`, { top3: t3, others: oth });
+  const updateTop3 = (i, field, val) => { const next = top3.map((t, idx) => idx === i ? { ...t, [field]: val } : t); setTop3(next); persist(next, others); };
+  const addOther = () => { const next = [...others, { id: Date.now() + Math.random(), text: '', done: false }]; setOthers(next); persist(top3, next); };
+  const updateOther = (id, field, val) => { const next = others.map(o => o.id === id ? { ...o, [field]: val } : o); setOthers(next); persist(top3, next); };
+  const removeOther = (id) => { const next = others.filter(o => o.id !== id); setOthers(next); persist(top3, next); };
+
+  return (
+    <div>
+      <DateNav date={date} setDate={setDate} />
+      {loading ? <Loading /> : (
+        <>
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: 14, color: COLORS.coral, marginBottom: 8 }}>오늘 꼭 해야 할 일 3가지</div>
+          {top3.map((t, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <button onClick={() => updateTop3(i, 'done', !t.done)} style={{ width: 24, height: 24, borderRadius: 6, border: `1.5px solid ${COLORS.coral}`, background: t.done ? COLORS.coral : '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 13, color: '#fff' }}>
+                {t.done ? '✓' : ''}
+              </button>
+              <input value={t.text} onChange={e => updateTop3(i, 'text', e.target.value)} placeholder={`중요한 일 ${i + 1}`}
+                style={{ flex: 1, padding: '8px 10px', border: `1px solid ${COLORS.line}`, borderRadius: 8, fontSize: 14, background: '#fff', textDecoration: t.done ? 'line-through' : 'none', color: t.done ? COLORS.inkSoft : COLORS.ink }} />
+            </div>
+          ))}
+
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: 14, color: COLORS.sage, margin: '22px 0 8px' }}>그 외 할 일</div>
+          {others.map(o => (
+            <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <button onClick={() => updateOther(o.id, 'done', !o.done)} style={{ width: 22, height: 22, borderRadius: 6, border: `1.5px solid ${COLORS.sage}`, background: o.done ? COLORS.sage : '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 12, color: '#fff' }}>
+                {o.done ? '✓' : ''}
+              </button>
+              <input value={o.text} onChange={e => updateOther(o.id, 'text', e.target.value)} placeholder="할 일"
+                style={{ flex: 1, padding: '7px 10px', border: `1px solid ${COLORS.line}`, borderRadius: 8, fontSize: 13, background: '#fff', textDecoration: o.done ? 'line-through' : 'none', color: o.done ? COLORS.inkSoft : COLORS.ink }} />
+              <button onClick={() => removeOther(o.id)} style={{ color: COLORS.inkSoft, background: 'none', border: 'none', flexShrink: 0, fontSize: 16 }}>×</button>
+            </div>
+          ))}
+          <button onClick={addOther} style={{ display: 'flex', alignItems: 'center', gap: 4, color: COLORS.sage, fontSize: 13, marginTop: 6, padding: '6px 0', background: 'none', border: 'none' }}>+ 할 일 추가</button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function MonthlyTab() {
+  const [ref, setRef] = useState(fmtDate(new Date()));
+  const mk = monthKey(ref);
+  const [goals, setGoals] = useState('');
+  const [plan, setPlan] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true; setLoading(true);
+    window.loadKey(`monthly:${mk}`, { goals: '', plan: '' }).then(d => {
+      if (active) { setGoals(d.goals || ''); setPlan(d.plan || ''); setLoading(false); }
+    });
+    return () => { active = false; };
+  }, [mk]);
+
+  const persist = (g, p) => window.saveKey(`monthly:${mk}`, { goals: g, plan: p });
+  const shiftMonth = (n) => { const d = parseDate(ref); d.setMonth(d.getMonth() + n, 1); setRef(fmtDate(d)); };
+  const d = parseDate(ref);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <IconBtn onClick={() => shiftMonth(-1)}>‹</IconBtn>
+        <div style={{ fontFamily: 'Georgia, serif', fontSize: 18, color: COLORS.ink }}>{d.getFullYear()}년 {d.getMonth() + 1}월</div>
+        <IconBtn onClick={() => shiftMonth(1)}>›</IconBtn>
+      </div>
+      <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 18, textAlign: 'center' }}>매월 마지막날 저녁, 다음 달 목표와 계획을 적어보세요</div>
+      {loading ? <Loading /> : (
+        <>
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: 14, color: COLORS.coral, marginBottom: 6 }}>이번 달 목표</div>
+          <textarea value={goals} onChange={e => setGoals(e.target.value)} onBlur={() => persist(goals, plan)} placeholder="이번 달 목표를 적어보세요" style={{ ...inputStyle, minHeight: 100, marginBottom: 18 }} />
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: 14, color: COLORS.sage, marginBottom: 6 }}>이번 달 계획</div>
+          <textarea value={plan} onChange={e => setPlan(e.target.value)} onBlur={() => persist(goals, plan)} placeholder="이번 달 계획을 적어보세요" style={{ ...inputStyle, minHeight: 140 }} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function WeeklyTab() {
+  const [ref, setRef] = useState(fmtDate(new Date()));
+  const monday = mondayOf(ref);
+  const sunday = addDays(monday, 6);
+  const [plan, setPlan] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true; setLoading(true);
+    window.loadKey(`weekly:${monday}`, { plan: '' }).then(d => {
+      if (active) { setPlan(d.plan || ''); setLoading(false); }
+    });
+    return () => { active = false; };
+  }, [monday]);
+
+  const persist = (p) => window.saveKey(`weekly:${monday}`, { plan: p });
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <IconBtn onClick={() => setRef(addDays(ref, -7))}>‹</IconBtn>
+        <div style={{ fontFamily: 'Georgia, serif', fontSize: 16, color: COLORS.ink }}>{monday} ~ {sunday}</div>
+        <IconBtn onClick={() => setRef(addDays(ref, 7))}>›</IconBtn>
+      </div>
+      <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 18, textAlign: 'center' }}>매주 일요일 저녁, 다음 주 계획을 적어보세요</div>
+      {loading ? <Loading /> : (
+        <textarea value={plan} onChange={e => setPlan(e.target.value)} onBlur={() => persist(plan)} placeholder="이번 주 계획을 적어보세요" style={{ ...inputStyle, minHeight: 300 }} />
+      )}
+    </div>
+  );
+}
+
+function DailyPlanTab() {
+  const [date, setDate] = useState(fmtDate(new Date()));
+  const [memo, setMemo] = useState('');
+  const [blocks, setBlocks] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true; setLoading(true);
+    window.loadKey(`dailyplan:${date}`, { memo: '', blocks: [] }).then(d => {
+      if (active) { setMemo(d.memo || ''); setBlocks(d.blocks || []); setLoading(false); }
+    });
+    return () => { active = false; };
+  }, [date]);
+
+  const persist = (m, b) => window.saveKey(`dailyplan:${date}`, { memo: m, blocks: b });
+  const handleBlocksChange = (nb) => { setBlocks(nb); persist(memo, nb); };
+
+  return (
+    <div>
+      <DateNav date={date} setDate={setDate} />
+      {loading ? <Loading /> : (
+        <>
+          <textarea value={memo} onChange={e => setMemo(e.target.value)} onBlur={() => persist(memo, blocks)} placeholder="오늘의 메모나 다짐을 적어보세요" style={{ ...inputStyle, minHeight: 56, marginBottom: 16 }} />
+          <div style={{ fontSize: 11, color: COLORS.inkSoft, marginBottom: 6 }}>칸을 눌러 드래그하면 시간대를 선택할 수 있어요</div>
+          <PlanGrid blocks={blocks} onBlocksChange={handleBlocksChange} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function ExecutionTab() {
+  const [date, setDate] = useState(fmtDate(new Date()));
+  const [blocks, setBlocks] = useState([]);
+  const [diary, setDiary] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true; setLoading(true);
+    (async () => {
+      const exec = await window.loadKey(`execution:${date}`, null);
+      if (exec) {
+        if (active) { setBlocks(exec.blocks || []); setDiary(exec.diary || ''); setLoading(false); }
+      } else {
+        const plan = await window.loadKey(`dailyplan:${date}`, { blocks: [] });
+        if (active) { setBlocks(plan.blocks || []); setDiary(''); setLoading(false); }
+      }
+    })();
+    return () => { active = false; };
+  }, [date]);
+
+  const persist = (b, d) => window.saveKey(`execution:${date}`, { blocks: b, diary: d });
+  const handleBlocksChange = (nb) => { setBlocks(nb); persist(nb, diary); };
+
+  return (
+    <div>
+      <DateNav date={date} setDate={setDate} />
+      {loading ? <Loading /> : (
+        <>
+          <div style={{ fontSize: 11, color: COLORS.inkSoft, marginBottom: 6 }}>계획을 실제 실행한 내용에 맞게 자유롭게 수정하세요</div>
+          <PlanGrid blocks={blocks} onBlocksChange={handleBlocksChange} />
+          <div style={{ marginTop: 20 }}>
+            <div style={{ fontSize: 13, color: COLORS.ink, marginBottom: 6, fontFamily: 'Georgia, serif' }}>오늘의 기록</div>
+            <textarea value={diary} onChange={e => setDiary(e.target.value)} onBlur={() => persist(blocks, diary)} placeholder="오늘 하루에 대한 생각이나 일기를 적어보세요" style={{ ...inputStyle, minHeight: 130 }} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [tab, setTab] = useState('todo');
+  const tabs = [
+    { key: 'todo', label: '할 일' },
+    { key: 'monthly', label: '월간' },
+    { key: 'weekly', label: '주간' },
+    { key: 'daily', label: '일간 계획' },
+    { key: 'exec', label: '실행 기록' },
+  ];
+
+  return (
+    <div style={{ background: COLORS.paper, minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: COLORS.ink }}>
+      <div style={{ padding: '20px 16px 0' }}>
+        <div style={{ fontFamily: 'Georgia, serif', fontSize: 21, marginBottom: 16, color: COLORS.ink }}>하루 기록</div>
+        <div style={{ display: 'flex', borderBottom: `1px solid ${COLORS.line}`, marginBottom: 20, overflowX: 'auto' }}>
+          {tabs.map(t => (
+            <button key={t.key} onClick={() => setTab(t.key)} style={{
+              padding: '8px 10px', fontSize: 13, whiteSpace: 'nowrap',
+              color: tab === t.key ? COLORS.ink : COLORS.inkSoft,
+              borderBottom: tab === t.key ? `2px solid ${COLORS.coral}` : '2px solid transparent',
+              fontWeight: tab === t.key ? 600 : 400,
+              background: 'none', borderTop: 'none', borderLeft: 'none', borderRight: 'none',
+            }}>{t.label}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ padding: '0 16px 40px' }}>
+        {tab === 'todo' && <TodoTab />}
+        {tab === 'monthly' && <MonthlyTab />}
+        {tab === 'weekly' && <WeeklyTab />}
+        {tab === 'daily' && <DailyPlanTab />}
+        {tab === 'exec' && <ExecutionTab />}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
