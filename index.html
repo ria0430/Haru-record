@@ -21,8 +21,6 @@
 
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 </head>
 <body>
 <div id="root">불러오는 중이에요. 몇 초 후에도 이 문구가 그대로면 새로고침 해보세요.</div>
@@ -55,21 +53,55 @@ window.addEventListener('error', function (ev) {
   };
   // ============================================================
 
-  firebase.initializeApp(firebaseConfig);
-  var db = firebase.firestore();
+  var FIRESTORE_BASE = 'https://firestore.googleapis.com/v1/projects/' + firebaseConfig.projectId + '/databases/(default)/documents/plannerData/';
+
+  function fetchWithTimeout(url, opts, ms) {
+    return new Promise(function (resolve, reject) {
+      var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      var timedOut = false;
+      var timer = setTimeout(function () {
+        timedOut = true;
+        if (ctrl) ctrl.abort();
+        reject(new Error('요청 시간 초과 (네트워크 확인 필요)'));
+      }, ms || 10000);
+      var o = Object.assign({}, opts || {});
+      if (ctrl) o.signal = ctrl.signal;
+      fetch(url, o).then(function (res) {
+        clearTimeout(timer);
+        if (!timedOut) resolve(res);
+      }).catch(function (err) {
+        clearTimeout(timer);
+        if (!timedOut) reject(err);
+      });
+    });
+  }
 
   window.loadKey = function (key, fallback) {
-    return db.collection('plannerData').doc(key).get().then(function (snap) {
-      return snap.exists ? snap.data().value : fallback;
+    var url = FIRESTORE_BASE + encodeURIComponent(key) + '?key=' + firebaseConfig.apiKey;
+    return fetchWithTimeout(url, { method: 'GET' }, 10000).then(function (res) {
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error('불러오기 오류 (' + res.status + ')');
+      return res.json();
+    }).then(function (doc) {
+      if (!doc || !doc.fields || !doc.fields.json) return fallback;
+      try { return JSON.parse(doc.fields.json.stringValue); } catch (e) { return fallback; }
     }).catch(function (e) {
       console.error('불러오기 실패', e);
       return fallback;
     });
   };
+
   window.saveKey = function (key, value) {
-    return db.collection('plannerData').doc(key).set({ value: value, updatedAt: Date.now() }).catch(function (e) {
-      console.error('저장 실패', e);
+    var url = FIRESTORE_BASE + encodeURIComponent(key) + '?key=' + firebaseConfig.apiKey +
+      '&updateMask.fieldPaths=json&updateMask.fieldPaths=updatedAt';
+    var body = JSON.stringify({
+      fields: {
+        json: { stringValue: JSON.stringify(value) },
+        updatedAt: { integerValue: String(Date.now()) }
+      }
     });
+    return fetchWithTimeout(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: body }, 10000)
+      .catch(function (e) { console.error('저장 실패', e); });
   };
 
   if ('serviceWorker' in navigator) {
