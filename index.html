@@ -21,6 +21,8 @@
 
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 </head>
 <body>
 <div id="root">불러오는 중이에요. 몇 초 후에도 이 문구가 그대로면 새로고침 해보세요.</div>
@@ -53,128 +55,21 @@ window.addEventListener('error', function (ev) {
   };
   // ============================================================
 
-  // ============================================================
-  // 로그인용 이메일 (Firebase 콘솔 Authentication에서 만든 사용자의 이메일과
-  // 똑같이 맞춰주세요. 비밀번호는 화면에서 직접 입력하니 여기 적지 않아요.)
-  // ============================================================
-  var AUTH_EMAIL = "riarin2003@naver.com";
-  // ============================================================
-
-  var FIRESTORE_BASE = 'https://firestore.googleapis.com/v1/projects/' + firebaseConfig.projectId + '/databases/(default)/documents/plannerData/';
-
-  window.authSignIn = function (password) {
-    var url = 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=' + firebaseConfig.apiKey;
-    return fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: AUTH_EMAIL, password: password, returnSecureToken: true })
-    }).then(function (res) {
-      return res.json().then(function (data) { return { ok: res.ok, data: data }; });
-    }).then(function (r) {
-      if (!r.ok) {
-        var code = (r.data && r.data.error && r.data.error.message) || '';
-        var msg = '비밀번호가 올바르지 않아요';
-        if (code.indexOf('INVALID_LOGIN_CREDENTIALS') !== -1 || code.indexOf('EMAIL_NOT_FOUND') !== -1 || code.indexOf('INVALID_PASSWORD') !== -1) {
-          msg = '비밀번호가 올바르지 않아요';
-        } else if (code) {
-          msg = '로그인 오류: ' + code;
-        }
-        throw new Error(msg);
-      }
-      localStorage.setItem('haru_idToken', r.data.idToken);
-      localStorage.setItem('haru_refreshToken', r.data.refreshToken);
-      localStorage.setItem('haru_expiresAt', String(Date.now() + parseInt(r.data.expiresIn, 10) * 1000));
-      return true;
-    });
-  };
-
-  window.authSignOut = function () {
-    localStorage.removeItem('haru_idToken');
-    localStorage.removeItem('haru_refreshToken');
-    localStorage.removeItem('haru_expiresAt');
-  };
-
-  window.authGetValidIdToken = function () {
-    var idToken = localStorage.getItem('haru_idToken');
-    var refreshToken = localStorage.getItem('haru_refreshToken');
-    var expiresAt = parseInt(localStorage.getItem('haru_expiresAt') || '0', 10);
-    if (!refreshToken) return Promise.resolve(null);
-    if (idToken && Date.now() < expiresAt - 60000) {
-      return Promise.resolve(idToken);
-    }
-    var url = 'https://securetoken.googleapis.com/v1/token?key=' + firebaseConfig.apiKey;
-    return fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(refreshToken)
-    }).then(function (res) {
-      if (!res.ok) throw new Error('토큰 갱신 실패');
-      return res.json();
-    }).then(function (data) {
-      localStorage.setItem('haru_idToken', data.id_token);
-      localStorage.setItem('haru_refreshToken', data.refresh_token);
-      localStorage.setItem('haru_expiresAt', String(Date.now() + parseInt(data.expires_in, 10) * 1000));
-      return data.id_token;
-    }).catch(function (e) {
-      console.error('토큰 갱신 실패', e);
-      window.authSignOut();
-      return null;
-    });
-  };
-
-  function fetchWithTimeout(url, opts, ms) {
-    return new Promise(function (resolve, reject) {
-      var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-      var timedOut = false;
-      var timer = setTimeout(function () {
-        timedOut = true;
-        if (ctrl) ctrl.abort();
-        reject(new Error('요청 시간 초과 (네트워크 확인 필요)'));
-      }, ms || 10000);
-      var o = Object.assign({}, opts || {});
-      if (ctrl) o.signal = ctrl.signal;
-      fetch(url, o).then(function (res) {
-        clearTimeout(timer);
-        if (!timedOut) resolve(res);
-      }).catch(function (err) {
-        clearTimeout(timer);
-        if (!timedOut) reject(err);
-      });
-    });
-  }
+  firebase.initializeApp(firebaseConfig);
+  var db = firebase.firestore();
 
   window.loadKey = function (key, fallback) {
-    return window.authGetValidIdToken().then(function (token) {
-      var url = FIRESTORE_BASE + encodeURIComponent(key) + '?key=' + firebaseConfig.apiKey;
-      var headers = token ? { Authorization: 'Bearer ' + token } : {};
-      return fetchWithTimeout(url, { method: 'GET', headers: headers }, 10000);
-    }).then(function (res) {
-      if (res.status === 404) return null;
-      if (!res.ok) throw new Error('불러오기 오류 (' + res.status + ')');
-      return res.json();
-    }).then(function (doc) {
-      if (!doc || !doc.fields || !doc.fields.json) return fallback;
-      try { return JSON.parse(doc.fields.json.stringValue); } catch (e) { return fallback; }
+    return db.collection('plannerData').doc(key).get().then(function (snap) {
+      return snap.exists ? snap.data().value : fallback;
     }).catch(function (e) {
       console.error('불러오기 실패', e);
       return fallback;
     });
   };
-
   window.saveKey = function (key, value) {
-    return window.authGetValidIdToken().then(function (token) {
-      var url = FIRESTORE_BASE + encodeURIComponent(key) + '?key=' + firebaseConfig.apiKey +
-        '&updateMask.fieldPaths=json&updateMask.fieldPaths=updatedAt';
-      var body = JSON.stringify({
-        fields: {
-          json: { stringValue: JSON.stringify(value) },
-          updatedAt: { integerValue: String(Date.now()) }
-        }
-      });
-      var headers = { 'Content-Type': 'application/json' };
-      if (token) headers.Authorization = 'Bearer ' + token;
-      return fetchWithTimeout(url, { method: 'PATCH', headers: headers, body: body }, 10000);
-    }).catch(function (e) { console.error('저장 실패', e); });
+    return db.collection('plannerData').doc(key).set({ value: value, updatedAt: Date.now() }).catch(function (e) {
+      console.error('저장 실패', e);
+    });
   };
 
   if ('serviceWorker' in navigator) {
@@ -189,19 +84,6 @@ window.addEventListener('error', function (ev) {
   var e = React.createElement;
   var useState = React.useState;
   var useEffect = React.useEffect;
-  var useContext = React.useContext;
-
-  var WideCtx = React.createContext(false);
-  function useIsWide() {
-    var stateHook = useState(function () { return window.innerWidth >= 700; });
-    var isWide = stateHook[0], setIsWide = stateHook[1];
-    useEffect(function () {
-      function onResize() { setIsWide(window.innerWidth >= 700); }
-      window.addEventListener('resize', onResize);
-      return function () { window.removeEventListener('resize', onResize); };
-    }, []);
-    return isWide;
-  }
 
   var COLORS = {
     paper: '#FAF6EE',
@@ -258,11 +140,6 @@ window.addEventListener('error', function (ev) {
 
   function PlanGrid(props) {
     var blocks = props.blocks, onBlocksChange = props.onBlocksChange;
-    var isWide = useContext(WideCtx);
-    var cellHeight = isWide ? 28 : 22;
-    var labelWidth = isWide ? 40 : 30;
-    var labelFontSize = isWide ? 12 : 10;
-    var blockFontSize = isWide ? 11 : 9;
     var draggingState = useState(false); var dragging = draggingState[0], setDragging = draggingState[1];
     var selStartState = useState(null); var selStart = selStartState[0], setSelStart = selStartState[1];
     var selEndState = useState(null); var selEnd = selEndState[0], setSelEnd = selEndState[1];
@@ -327,15 +204,15 @@ window.addEventListener('error', function (ev) {
           'data-idx': idx,
           onPointerDown: function () { handlePointerDown(idx); },
           style: {
-            flex: 1, height: cellHeight,
+            flex: 1, height: 22,
             borderLeft: col === 0 ? 'none' : '1px dashed ' + COLORS.line,
             background: block ? block.color : (inSel ? COLORS.sageLight : '#fff'),
             position: 'relative', overflow: 'hidden',
           }
-        }, isBlockStart ? e('span', { style: { position: 'absolute', left: 3, top: 2, fontSize: blockFontSize, color: '#fff', whiteSpace: 'nowrap', fontFamily: 'system-ui, sans-serif' } }, block.text) : null);
+        }, isBlockStart ? e('span', { style: { position: 'absolute', left: 3, top: 2, fontSize: 9, color: '#fff', whiteSpace: 'nowrap', fontFamily: 'system-ui, sans-serif' } }, block.text) : null);
       });
       return e('div', { key: h, style: { display: 'flex', borderBottom: hourIdx === HOURS.length - 1 ? 'none' : '1px solid ' + COLORS.line } },
-        e('div', { style: { width: labelWidth, fontSize: labelFontSize, color: COLORS.inkSoft, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Georgia, serif', flexShrink: 0, background: COLORS.paper } }, h),
+        e('div', { style: { width: 30, fontSize: 10, color: COLORS.inkSoft, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Georgia, serif', flexShrink: 0, background: COLORS.paper } }, h),
         cells
       );
     });
@@ -558,8 +435,7 @@ window.addEventListener('error', function (ev) {
     );
   }
 
-  function App(props) {
-    var isWide = useIsWide();
+  function App() {
     var tabState = useState('todo'); var tab = tabState[0], setTab = tabState[1];
     var tabs = [
       { key: 'todo', label: '할 일' },
@@ -576,19 +452,16 @@ window.addEventListener('error', function (ev) {
     else if (tab === 'daily') content = e(DailyPlanTab);
     else if (tab === 'exec') content = e(ExecutionTab);
 
-    var inner = e('div', { style: { maxWidth: isWide ? 640 : '100%', margin: isWide ? '0 auto' : 0 } },
-      e('div', { style: { padding: isWide ? '28px 24px 0' : '20px 16px 0' } },
-        e('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: isWide ? 20 : 16 } },
-          e('div', { style: { fontFamily: 'Georgia, serif', fontSize: isWide ? 25 : 21, color: COLORS.ink } }, '하루 기록'),
-          e('button', { onClick: props.onLogout, style: { fontSize: 12, color: COLORS.inkSoft, background: 'none', border: 'none' } }, '로그아웃')
-        ),
-        e('div', { style: { display: 'flex', borderBottom: '1px solid ' + COLORS.line, marginBottom: isWide ? 26 : 20, overflowX: 'auto' } },
+    return e('div', { style: { background: COLORS.paper, minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: COLORS.ink } },
+      e('div', { style: { padding: '20px 16px 0' } },
+        e('div', { style: { fontFamily: 'Georgia, serif', fontSize: 21, marginBottom: 16, color: COLORS.ink } }, '하루 기록'),
+        e('div', { style: { display: 'flex', borderBottom: '1px solid ' + COLORS.line, marginBottom: 20, overflowX: 'auto' } },
           tabs.map(function (t) {
             return e('button', {
               key: t.key,
               onClick: function () { setTab(t.key); },
               style: {
-                padding: isWide ? '10px 16px' : '8px 10px', fontSize: isWide ? 15 : 13, whiteSpace: 'nowrap',
+                padding: '8px 10px', fontSize: 13, whiteSpace: 'nowrap',
                 color: tab === t.key ? COLORS.ink : COLORS.inkSoft,
                 borderBottom: tab === t.key ? '2px solid ' + COLORS.coral : '2px solid transparent',
                 fontWeight: tab === t.key ? 600 : 400,
@@ -598,74 +471,14 @@ window.addEventListener('error', function (ev) {
           })
         )
       ),
-      e('div', { style: { padding: isWide ? '0 24px 48px' : '0 16px 40px' } }, content)
+      e('div', { style: { padding: '0 16px 40px' } }, content)
     );
-
-    return e('div', { style: { background: COLORS.paper, minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', color: COLORS.ink } },
-      e(WideCtx.Provider, { value: isWide }, inner)
-    );
-  }
-
-  function LoginScreen(props) {
-    var pwState = useState(''); var pw = pwState[0], setPw = pwState[1];
-    var errState = useState(''); var err = errState[0], setErr = errState[1];
-    var loadingState = useState(false); var loading = loadingState[0], setLoading = loadingState[1];
-
-    function submit(ev) {
-      if (ev) ev.preventDefault();
-      if (!pw) return;
-      setLoading(true); setErr('');
-      window.authSignIn(pw).then(function () {
-        setLoading(false);
-        props.onSuccess();
-      }).catch(function (e2) {
-        setLoading(false);
-        setErr(e2.message || '로그인 실패');
-      });
-    }
-
-    return e('div', { style: { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: COLORS.paper, padding: 20 } },
-      e('form', { onSubmit: submit, style: { width: '100%', maxWidth: 300 } },
-        e('div', { style: { fontFamily: 'Georgia, serif', fontSize: 22, color: COLORS.ink, marginBottom: 24, textAlign: 'center' } }, '하루 기록'),
-        e('input', {
-          type: 'password', value: pw, onChange: function (ev) { setPw(ev.target.value); },
-          placeholder: '비밀번호', autoFocus: true,
-          style: Object.assign({}, inputStyle, { marginBottom: 10, textAlign: 'center', fontSize: 16 })
-        }),
-        err ? e('div', { style: { color: COLORS.coral, fontSize: 12, marginBottom: 10, textAlign: 'center' } }, err) : null,
-        e('button', {
-          type: 'submit', disabled: loading,
-          style: { width: '100%', padding: 12, borderRadius: 8, background: COLORS.sage, color: '#fff', border: 'none', fontSize: 15, marginTop: 4 }
-        }, loading ? '확인 중...' : '열기')
-      )
-    );
-  }
-
-  function Root() {
-    var authState = useState(null); var authed = authState[0], setAuthed = authState[1];
-
-    useEffect(function () {
-      window.authGetValidIdToken().then(function (token) { setAuthed(!!token); });
-    }, []);
-
-    if (authed === null) {
-      return e('div', { style: { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: COLORS.paper, color: COLORS.inkSoft, fontSize: 13 } }, '확인 중...');
-    }
-    if (!authed) {
-      return e(LoginScreen, { onSuccess: function () { setAuthed(true); } });
-    }
-    return e(App, {
-      onLogout: function () {
-        window.authSignOut();
-        setAuthed(false);
-      }
-    });
   }
 
   var rootEl = document.getElementById('root');
   rootEl.dataset.rendered = '1';
   var root = ReactDOM.createRoot(rootEl);
-  root.render(e(Root));
+  root.render(e(App));
 })();
 </script>
 </body>
